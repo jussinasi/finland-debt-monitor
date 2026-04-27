@@ -305,11 +305,82 @@ elif page == "🔮 DSA Simulator":
 
     with st.spinner("Loading debt data…"):
         df_gdp = load_debt_gdp()
+        df_irs = load_interest_rate_sensitivity()
 
     latest = df_gdp.iloc[-1]
+    latest_irs = df_irs.iloc[-1]
     debt0 = latest["percentOfGdp"]
 
-    st.markdown(f"**Starting point ({int(latest['year'])}):** Gross debt **{debt0:.1f}% GDP**")
+    # ── POLICY DASHBOARD ── show the key number immediately ──────────────────
+    r_default   = float(latest_irs["averageFixing"])
+    g_default   = 1.2   # approximate recent trend growth
+    pb_default  = -2.0  # approximate current primary balance
+
+    pb_star_now = ((r_default/100 - g_default/100) / (1 + g_default/100)) * debt0
+    adj_needed  = pb_star_now - pb_default
+    hist_max_surplus = 1.5  # Finland historical max primary surplus ~1.5% GDP
+
+    feasible = adj_needed <= hist_max_surplus
+
+    st.markdown("### 🎯 Policy Dashboard")
+    pa, pb_col, pc, pd_col = st.columns(4)
+
+    pa.metric(
+        "Required primary balance",
+        f"{pb_star_now:+.1f}% GDP",
+        help="Primary balance that stabilises debt at current level"
+    )
+    pb_col.metric(
+        "Current primary balance (est.)",
+        f"{pb_default:+.1f}% GDP",
+    )
+    pc.metric(
+        "Adjustment needed",
+        f"{adj_needed:+.1f}pp",
+        delta="of GDP",
+        delta_color="off",
+    )
+    pd_col.metric(
+        "Historical max surplus",
+        f"{hist_max_surplus:+.1f}% GDP",
+        delta="feasibility benchmark",
+        delta_color="off",
+    )
+
+    # Headline verdict
+    if adj_needed > hist_max_surplus:
+        st.error(
+            f"❌ **Required adjustment exceeds Finland's historical fiscal capacity.** "
+            f"Stabilising debt at **{debt0:.1f}% GDP** requires a primary balance of **{pb_star_now:+.1f}% GDP** — "
+            f"an improvement of **{adj_needed:.1f}pp** from the current estimated **{pb_default:+.1f}%**. "
+            f"Finland's historical maximum primary surplus is ~{hist_max_surplus:.1f}% GDP, "
+            f"suggesting stabilisation under current r/g conditions would require exceptional consolidation effort. "
+            f"
+
+**Sensitivity:** A 1pp rise in r shifts the required pb* by ~{debt0/100:.1f}pp. "
+            f"A 1pp rise in g reduces it by ~{debt0/100:.1f}pp."
+        )
+    elif adj_needed > 0.5:
+        st.warning(
+            f"⚠️ **Significant but potentially feasible adjustment needed.** "
+            f"Stabilising debt requires primary balance of **{pb_star_now:+.1f}% GDP** "
+            f"(gap: **{adj_needed:.1f}pp**). This is within Finland's historical range (~{hist_max_surplus:.1f}% max) "
+            f"but requires sustained fiscal consolidation. "
+            f"
+
+**Sensitivity:** A 1pp rise in r shifts required pb* by ~{debt0/100:.1f}pp. "
+            f"A 1pp rise in g reduces it by ~{debt0/100:.1f}pp."
+        )
+    else:
+        st.success(
+            f"✅ **Debt is broadly sustainable under current conditions.** "
+            f"Required pb* = **{pb_star_now:+.1f}% GDP** vs current **{pb_default:+.1f}%** — "
+            f"no significant adjustment required."
+        )
+
+    st.divider()
+    st.markdown(f"**Starting point ({int(latest['year'])}):** Gross debt **{debt0:.1f}% GDP** · "
+                f"Avg refixing period: **{r_default:.1f} years** · Assumptions: r={r_default:.1f}%, g={g_default:.1f}%")
 
     def sim(d0, pb, r, g, years=12):
         traj = [d0]
