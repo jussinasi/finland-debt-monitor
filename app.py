@@ -54,6 +54,7 @@ with st.sidebar:
         "📈 Interest Rate Risk",
         "💧 Liquidity Buffer",
         "🔮 DSA Simulator",
+        "🗺️ Feasibility Map",
     ])
 
     st.divider()
@@ -420,4 +421,192 @@ elif page == "🔮 DSA Simulator":
         st.success(
             f"**Key takeaway:** Debt trajectory is **broadly sustainable**, "
             f"projected at {t_b[-1]:.1f}% GDP by {years[-1]}, {why}."
+        )
+
+# ── FEASIBILITY MAP ────────────────────────────────────────────────────────────
+elif page == "🗺️ Feasibility Map":
+    st.subheader("Fiscal Feasibility Map · Where is Finland on the sustainability frontier?")
+    st.caption(
+        "Shows which combinations of interest rate (r) and GDP growth (g) make debt sustainable "        "given the current primary balance. Green = debt stabilises, Red = debt explodes."
+    )
+
+    import numpy as np
+
+    with st.spinner("Loading data…"):
+        df_gdp = load_debt_gdp()
+        df_irs = load_interest_rate_sensitivity()
+
+    latest_gdp = df_gdp.iloc[-1]
+    latest_irs = df_irs.iloc[-1]
+    debt0 = latest_gdp["percentOfGdp"]
+
+    # Primary balance input
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        pb_map = st.slider(
+            "Primary balance assumption (% GDP)",
+            -6.0, 4.0, -2.0, 0.1,
+            help="Adjust to see how fiscal stance shifts the sustainability frontier"
+        )
+        st.caption(f"Current debt: **{debt0:.1f}% GDP**")
+        st.caption(f"Avg maturity: **{latest_irs['averageMaturity']:.1f} years**")
+        st.caption(f"Avg refixing: **{latest_irs['averageFixing']:.1f} years**")
+
+    # Build grid
+    r_vals = np.arange(0.0, 8.1, 0.25)
+    g_vals = np.arange(-1.0, 5.1, 0.25)
+
+    def proj_debt(d0, pb, r, g, years=12):
+        d = d0
+        for _ in range(years):
+            d = ((1 + r/100) / (1 + g/100)) * d - pb
+        return d
+
+    def classify(end, start, pb, r, g):
+        pb_s = ((r/100 - g/100) / (1 + g/100)) * start
+        gap = pb - pb_s
+        if end < start - 2 or gap > 0.5:
+            return "Stabilising", gap
+        elif end < start + 5 or gap > -1:
+            return "At risk", gap
+        else:
+            return "Unsustainable", gap
+
+    # Compute grid
+    z_label = []
+    z_gap = []
+    z_end = []
+    for g in g_vals:
+        row_label = []
+        row_gap = []
+        row_end = []
+        for r in r_vals:
+            end = proj_debt(debt0, pb_map, r, g)
+            label, gap = classify(end, debt0, pb_map, r, g)
+            row_label.append(label)
+            row_gap.append(round(gap, 2))
+            row_end.append(round(end, 1))
+        z_label.append(row_label)
+        z_gap.append(row_gap)
+        z_end.append(row_end)
+
+    # Color map
+    color_map = {"Stabilising": 1, "At risk": 0, "Unsustainable": -1}
+    z_num = [[color_map[v] for v in row] for row in z_label]
+
+    # Current position
+    r_now = latest_irs["averageFixing"]
+    g_now = 1.2  # approximate recent growth
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Heatmap(
+        x=r_vals,
+        y=g_vals,
+        z=z_num,
+        colorscale=[
+            [0.0, "#dc2626"],
+            [0.5, "#fbbf24"],
+            [1.0, "#16a34a"],
+        ],
+        showscale=False,
+        hovertemplate=(
+            "r = %{x:.2f}%<br>"
+            "g = %{y:.2f}%<br>"
+            "Debt 2035: %{customdata[0]:.1f}% GDP<br>"
+            "Gap to pb*: %{customdata[1]:+.2f}pp<br>"
+            "<b>%{customdata[2]}</b><extra></extra>"
+        ),
+        customdata=[
+            [[z_end[i][j], z_gap[i][j], z_label[i][j]]
+             for j in range(len(r_vals))]
+            for i in range(len(g_vals))
+        ],
+    ))
+
+    # Current position marker
+    fig.add_trace(go.Scatter(
+        x=[r_now], y=[g_now],
+        mode="markers+text",
+        marker=dict(size=14, color="white", symbol="star", line=dict(color="black", width=2)),
+        text=["Finland now"],
+        textposition="top center",
+        textfont=dict(size=11, color="black"),
+        name="Finland (current)",
+        showlegend=True,
+    ))
+
+    # r = g line
+    rg_line = [v for v in r_vals if v <= max(g_vals)]
+    fig.add_trace(go.Scatter(
+        x=r_vals,
+        y=r_vals,
+        mode="lines",
+        line=dict(color="white", dash="dot", width=1.5),
+        name="r = g (neutral)",
+        showlegend=True,
+    ))
+
+    fig.update_layout(
+        title=f"Fiscal Feasibility Map · Primary balance = {pb_map:+.1f}% GDP · Debt = {debt0:.1f}% GDP",
+        xaxis=dict(title="Interest rate r (%)", dtick=0.5),
+        yaxis=dict(title="GDP growth g (%)", dtick=0.5),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        height=520,
+    )
+    with col2:
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # Required adjustment table
+    st.subheader("Required Fiscal Adjustment · Sensitivity Table")
+    st.caption("How much primary balance improvement is needed to stabilise debt under different r/g combinations?")
+
+    r_scenarios = [2.0, 3.0, 3.5, 4.0, 5.0, 6.0]
+    g_scenarios = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+
+    rows = []
+    for g_s in g_scenarios:
+        row = {"g \ r": f"g = {g_s:.1f}%"}
+        for r_s in r_scenarios:
+            pb_s = ((r_s/100 - g_s/100) / (1 + g_s/100)) * debt0
+            gap = pb_map - pb_s
+            adj = -gap  # positive = tightening needed
+            if adj <= 0:
+                row[f"r={r_s:.1f}%"] = f"✅ {adj:+.1f}pp"
+            elif adj <= 1:
+                row[f"r={r_s:.1f}%"] = f"⚠️ {adj:+.1f}pp"
+            else:
+                row[f"r={r_s:.1f}%"] = f"❌ {adj:+.1f}pp"
+        rows.append(row)
+
+    st.dataframe(pd.DataFrame(rows).set_index("g \ r"), use_container_width=True)
+    st.caption("✅ Surplus = no tightening needed · ⚠️ Small adjustment · ❌ Significant consolidation required")
+
+    # Narrative
+    st.divider()
+    pb_star_now = ((r_now/100 - g_now/100) / (1 + g_now/100)) * debt0
+    adj_needed = pb_star_now - pb_map
+
+    if adj_needed > 2:
+        st.error(
+            f"**Finland's current fiscal stance requires significant adjustment.** "
+            f"Under current macroeconomic conditions (r ≈ {r_now:.1f}%, g ≈ {g_now:.1f}%), "
+            f"the debt-stabilising primary balance is **{pb_star_now:+.1f}% GDP**. "
+            f"With a primary balance of **{pb_map:+.1f}%**, an adjustment of **{adj_needed:.1f}pp** is needed — "
+            f"a substantial fiscal consolidation effort that would require either revenue increases, "
+            f"expenditure cuts, or structural growth reforms."
+        )
+    elif adj_needed > 0.5:
+        st.warning(
+            f"**Moderate fiscal adjustment needed.** "
+            f"Debt-stabilising pb* = **{pb_star_now:+.1f}% GDP** vs current **{pb_map:+.1f}%**. "
+            f"Required tightening: **{adj_needed:.1f}pp** — within historical consolidation range but non-trivial."
+        )
+    else:
+        st.success(
+            f"**Debt is broadly on a sustainable path** under current conditions. "
+            f"Debt-stabilising pb* = **{pb_star_now:+.1f}% GDP** vs current **{pb_map:+.1f}%** — "
+            f"no significant adjustment required."
         )
